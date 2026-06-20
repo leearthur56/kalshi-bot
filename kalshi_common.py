@@ -86,9 +86,23 @@ def yes_price(market: dict) -> float:
     return fnum(market, "last_price_dollars")
 
 
-def fee_per_contract(price: float, coef: float = DEFAULT_FEE_COEF) -> float:
-    """Kalshi fee per single contract at a given price (dollars)."""
-    return math.ceil(coef * price * (1.0 - price) * 100) / 100.0
+def fee_for_order(price: float, contracts: int = 1,
+                  coef: float = DEFAULT_FEE_COEF) -> float:
+    """
+    Total Kalshi fee for an ORDER, in dollars.
+
+    fee = round_up( coef * C * P * (1-P) ), rounded up to the next cent ONCE
+    for the whole order -- not per contract. So per-contract cost falls as the
+    order grows (the 1-cent round-up floor gets amortized).
+    """
+    raw = coef * contracts * price * (1.0 - price)
+    return math.ceil(raw * 100) / 100.0
+
+
+def fee_per_contract(price: float, contracts: int = 1,
+                     coef: float = DEFAULT_FEE_COEF) -> float:
+    """Amortized fee per contract for an order of `contracts` at `price`."""
+    return fee_for_order(price, contracts, coef) / contracts
 
 
 def candlestick_price_at(ticker: str, target_ts: int, *,

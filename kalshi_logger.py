@@ -140,7 +140,7 @@ def cmd_report(args) -> int:
         bucket = next((b for b in BUCKETS if b[0] <= fav_price < b[1]), None)
         if bucket is None:
             continue
-        fee = kc.fee_per_contract(fav_price)
+        fee = kc.fee_per_contract(fav_price, 100)  # amortized over a 100-lot
         gross = (1 - fav_price) if fav_won else (-fav_price)
         st = stats[bucket]
         st[0] += 1

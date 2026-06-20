@@ -91,7 +91,7 @@ def run(args) -> int:
         bucket = next((b for b in BUCKETS if b[0] <= fav_price < b[1]), None)
         if bucket is None:
             continue
-        fee = kc.fee_per_contract(fav_price, fee_coef)
+        fee = kc.fee_per_contract(fav_price, args.order_size, fee_coef)
         gross = (1 - fav_price) if fav_won else (-fav_price)
         s = stats[bucket]
         s[0] += 1
@@ -104,7 +104,9 @@ def run(args) -> int:
             else f"candlestick mid {args.lead_hours}h before close (unbiased)")
     print(f"\nScanned {scanned} settled markets; {priced} qualified "
           f"(favorite >= {args.min_price:.2f}, vol >= {args.min_volume:g}).")
-    print(f"Entry price mode: {mode}\n")
+    print(f"Entry price mode: {mode}")
+    print(f"Order size: {args.order_size} contracts "
+          f"(fee rounded up once per order, then amortized per contract)\n")
 
     header = (f"{'ENTRY PRICE':<13} {'N':>6} {'IMPLIED':>8} {'ACTUAL':>8} "
               f"{'EDGE':>7} {'GROSS EV':>9} {'NET EV':>8} {'TOTAL NET':>10}")
@@ -158,6 +160,9 @@ def main() -> int:
                     help="Skip thin markets below this volume. Default 100.")
     ap.add_argument("--lead-hours", type=int, default=None,
                     help="Use candlestick mid this many hours before close (unbiased, slow).")
+    ap.add_argument("--order-size", type=int, default=100,
+                    help="Contracts per order; fee is rounded up once per order, "
+                         "so larger orders pay less per contract. Default 100.")
     ap.add_argument("--fee-coef", type=float, default=kc.DEFAULT_FEE_COEF,
                     help="Kalshi fee coefficient (0.07 standard, 0.035 for some).")
     return run(ap.parse_args())

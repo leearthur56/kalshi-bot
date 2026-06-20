@@ -37,15 +37,20 @@ not exist, and the tool proves why rather than pretending otherwise:
 - Buy the 99¢ side and you win **+1¢** when right, lose **−99¢** when wrong.
   Your break-even win rate is exactly 99% — you need to be right *as often as
   the market already expects* just to not lose money.
-- **Fees finish the job.** Kalshi's per-contract fee is about
-  `ceil(0.07 × price × (1−price))`. At 99¢ that rounds up to **1¢** — larger
-  than the entire 1¢ of upside. The tool's `EV` column shows this as a
-  **negative** number on every skewed market.
+- **Fees: smaller than they look, if you buy in size.** Kalshi's fee is
+  `round_up(0.07 × C × P × (1−P))` **per order** (C = contracts), rounded up to
+  the next cent *once*. So 1 contract @ 99¢ pays the 1¢ floor, but **100
+  contracts @ 99¢ pay only 7¢ total — 0.07¢ each.** Buying in size amortizes the
+  round-up floor. Use `--order-size` to model this.
 
-This is the textbook *"picking up pennies in front of a steamroller"* trade:
-many tiny wins, then one loss that erases all of them. The tracker is a
-**monitoring/learning tool**, not a guaranteed-money strategy — there is no such
-thing, and any tool claiming otherwise is wrong about how prices work.
+So the real question isn't fees — it's whether the favorite wins **more** than
+its price implies (favorite-longshot bias). If it wins even ~0.1% more than
+priced, the thin in-size fee can leave a small **positive** edge. That is an
+empirical question — measure it with the backtest and logger; don't assume it.
+
+This is still the *"picking up pennies in front of a steamroller"* shape: many
+tiny wins and rare large losses, so tail risk and sample size matter more than
+anything. The tracker is a **monitoring/research tool**, not a guarantee.
 
 ## The tools
 
@@ -70,23 +75,27 @@ python kalshi_logger.py report
 
 ## What the backtest actually found (NYC-weather series, sample run)
 
-Using an **unbiased** entry price 6h before close:
+Unbiased entry price 6h before close, **100-contract orders**:
 
 | Entry price | N | Implied | Actual win | Edge | Net EV/contract |
 |-------------|---|---------|-----------|------|-----------------|
-| 99–100¢ | 217 | 99.06% | 100.00% | **+0.94%** | **−0.06¢** |
-| 98–99¢ | 10 | 98.35% | 100% | +1.65% | +0.65¢ |
-| 90–95¢ | 8 | 92.06% | 75% | −17% | −18¢ |
+| 99–100¢ | 217 | 99.06% | 100.00% | **+0.94%** | **+0.87¢** |
+| 98–99¢ | 10 | 98.35% | 100% | +1.65% | +1.53¢ |
+| 90–95¢ | 8 | 92.06% | 75% | **−17%** | **−17.6¢** |
 
-Your hypothesis is **partly right**: favorites at 99¢ did win slightly *more*
-than priced (+0.94% edge — the tick-floor/longshot effect is real and
-measurable). **But** the 1¢ fee turns that into a small *negative* EV, and a
-couple of upsets in the lower buckets blow a hole that dwarfs all the penny
-wins. Total across the sample: **−$1.12**. Picking up pennies, meet steamroller.
+Your hypothesis held up in this sample: favorites won slightly *more* than
+priced (the tick-floor / longshot effect is real), and with the **correct
+in-size fee (~0.07¢/contract, not 1¢)** that edge survives — total **+$1.11**
+across the sample. Note the 90–95¢ row though: two upsets there lost 17¢ *each*,
+the steamroller in miniature.
 
-Caveats: small sample, one series, fills assumed at mid (real fills are worse),
-no capital-efficiency penalty for locking 99¢ to earn <1¢. Run it on more series
-and a bigger `--max` before drawing conclusions — that's what the tools are for.
+**Do not trust this yet.** It is one small sample (217 markets) of one unusually
+predictable series (daily NYC high temp) in which zero 99¢ favorites happened to
+lose. The whole edge rests on the favorite winning ~0.07%+ more than priced — a
+thin margin that a handful of upsets would erase. It also assumes fills at mid
+(real fills are worse) and ignores capital lockup. Run it across many series and
+a much bigger `--max`, or accumulate live data with the logger, before believing
+the edge is real.
 
 ## Output columns
 

@@ -88,6 +88,7 @@ class SkewedMarket:
     close_time: str
     favored_side: str         # "YES" or "NO"
     favored_price: float      # price of the heavily-favored side (>= threshold)
+    order_size: int = 100     # contracts per order (fee is amortized over these)
 
     # --- the math that matters ---
     @property
@@ -111,9 +112,14 @@ class SkewedMarket:
 
     @property
     def est_fee(self) -> float:
-        """Kalshi trading fee per contract ~= ceil(0.07 * P * (1-P)) in cents."""
-        p = self.favored_price
-        return math.ceil(0.07 * p * (1.0 - p) * 100) / 100.0
+        """
+        Kalshi fee per contract, amortized over the order. The fee is
+        ceil(0.07 * C * P * (1-P)) rounded up ONCE per order of C contracts,
+        so per-contract cost falls as the order grows (1c floor on tiny orders,
+        ~0.07c/contract at 99c once you buy ~100+).
+        """
+        p, c = self.favored_price, self.order_size
+        return (math.ceil(0.07 * c * p * (1.0 - p) * 100) / 100.0) / c
 
     @property
     def net_ev_at_implied(self) -> float:
@@ -198,11 +204,15 @@ def print_table(skewed: list[SkewedMarket]) -> None:
             f"{s.title}"
         )
 
+    os = skewed[0].order_size
     print(
-        "\nReality check: 'net EV/contract at fair price' is what you'd expect to "
-        "make per contract if the\nmarket's price is the true probability. It is "
-        "negative because the fee eats the entire ~1c edge.\nThe 99c side is NOT a "
-        "guaranteed win -- ~1 in 100 of these resolves the other way and costs you 99c."
+        f"\nReality check (fee amortized over {os}-contract orders): 'net EV/contract "
+        "at fair price' is what\nyou'd make per contract IF the price equals the true "
+        "probability. At fair price it's just the\nfee drag -- small in size (~0.07c at "
+        "99c for 100 lots), not the 1c a single contract pays.\nThe 99c side is NOT a "
+        "guaranteed win -- ~1 in 100 resolves the other way and costs you 99c.\n"
+        "Whether the favorite wins *more* than priced (a real edge) is what backtest/"
+        "logger measure."
     )
 
 
@@ -214,6 +224,9 @@ def main() -> int:
                     help="Ignore markets with volume below this. Default 0.")
     ap.add_argument("--max-markets", type=int, default=None,
                     help="Cap how many markets to scan (for quick tests).")
+    ap.add_argument("--order-size", type=int, default=100,
+                    help="Contracts per order; fee is rounded up once per order, "
+                         "so bigger orders pay less per contract. Default 100.")
     ap.add_argument("--watch", type=float, default=0.0, metavar="SECONDS",
                     help="Re-scan every N seconds instead of running once.")
     ap.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
@@ -222,6 +235,8 @@ def main() -> int:
     def run_once() -> None:
         markets = fetch_all_open_markets(max_markets=args.max_markets)
         skewed = find_skewed(markets, args.threshold, args.min_volume)
+        for s in skewed:
+            s.order_size = args.order_size
         if args.json:
             print(json.dumps([s.__dict__ | {
                 "implied_prob": s.implied_prob,
