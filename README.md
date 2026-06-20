@@ -59,6 +59,7 @@ anything. The tracker is a **monitoring/research tool**, not a guarantee.
 | `kalshi_tracker.py` | Live scan of open markets for extreme prices, with EV math. |
 | `kalshi_backtest.py` | Backtests "buy the favorite" on **settled** markets — actual win rate vs implied, net of fees, bucketed by entry price. |
 | `kalshi_sweep.py` | Runs the backtest across **all series at once** and ranks them by net edge. |
+| `kalshi_paper_bot.py` | **Fake-money** paper trader: buys $100 of each 99¢ weather favorite (near-close or sustained-hold entry), tracks P&L. `backsim` / `poll` / `report`. |
 | `kalshi_logger.py` | Logs current prices now and resolutions later, building an **unbiased** forward dataset (`snapshot` / `settle` / `report`). |
 
 ```bash
@@ -202,6 +203,28 @@ So: a genuine micro-edge exists in the liquid daily series, but its risk/reward 
 exactly why the price sits at 99 — small scalable profit, rare catastrophic loss.
 Real, measurable, and not something to bet the farm on. Use `kalshi_logger.py` to
 keep accruing live, unbiased resolutions and watch for the first loss.
+
+## Paper-trading bot (fake money)
+
+`kalshi_paper_bot.py` simulates the strategy with **$100 per contract**, no real
+orders. It now covers all **20** daily high-temp cities.
+
+```bash
+python kalshi_paper_bot.py backsim --stake 100                 # replay history now
+python kalshi_paper_bot.py poll    --stake 100 --entry close   # live forward step
+python kalshi_paper_bot.py report                              # portfolio so far
+```
+
+Two entry rules:
+- `--entry close` (default): buy in the final `--close-window-min` (5) minutes
+  before close. By then the day's high is physically set, so the 99¢ favorite is
+  about as decided as it gets — the safest version.
+- `--entry hold`: buy once the favorite has held ≥99¢ for `--min-hold-hours` (1).
+
+For continuous live operation, schedule `poll` with Windows Task Scheduler
+(every ~2 min for the near-close rule). It's forward-looking — use `backsim` for
+historical numbers. Same caveats as everywhere: ~1¢ upside, thin near-close
+liquidity, and tail risk a short history can't price.
 
 ## Output columns
 

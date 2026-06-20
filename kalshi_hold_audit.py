@@ -25,8 +25,15 @@ import sys
 
 import kalshi_common as kc
 
-WEATHER = ["KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHLAX",
-           "KXHIGHDEN", "KXHIGHAUS", "KXHIGHPHIL"]
+WEATHER = [
+    # original-naming cities
+    "KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHLAX", "KXHIGHDEN",
+    "KXHIGHAUS", "KXHIGHPHIL",
+    # newer KXHIGHT<city> daily high-temp series
+    "KXHIGHTSEA", "KXHIGHTLV", "KXHIGHTNOLA", "KXHIGHTOKC", "KXHIGHTATL",
+    "KXHIGHTDAL", "KXHIGHTBOS", "KXHIGHTDC", "KXHIGHTMIN", "KXHIGHTSFO",
+    "KXHIGHTPHX", "KXHIGHTSATX", "KXHIGHTHOU",
+]
 
 HOUR = 3600
 
