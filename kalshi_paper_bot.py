@@ -161,6 +161,43 @@ def log_line(msg: str) -> None:
         pass
 
 
+DEPTH_FILE = os.path.join(STATE_DIR, "depth.csv")
+DEPTH_HEADER = "ts,ticker,side,mins_to_close,buy_price,buy_size,buyable_at_99\n"
+
+
+def buyable_at(market: dict, thr: float):
+    """
+    What it would actually take to BUY the favorite right now (read-only):
+    returns (side, buy_price, buy_size) where buy_price is the ask you'd pay and
+    buy_size is the size resting there. None if neither side is a >= thr favorite.
+    """
+    yb, ya = kc.fnum(market, "yes_bid_dollars"), kc.fnum(market, "yes_ask_dollars")
+    last = kc.fnum(market, "last_price_dollars")
+    yes_mid = (yb + ya) / 2 if (yb > 0 and ya > 0) else last
+    if yes_mid <= 0:
+        return None
+    if yes_mid >= thr:                 # buy YES: pay the yes ask
+        return "YES", ya, kc.fnum(market, "yes_ask_size_fp")
+    if (1 - yes_mid) >= thr:           # buy NO: pay 1 - yes_bid
+        return "NO", round(1 - yb, 2), kc.fnum(market, "yes_bid_size_fp")
+    return None
+
+
+def write_depth(rows: list) -> None:
+    if not rows:
+        return
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        new = not os.path.exists(DEPTH_FILE)
+        with open(DEPTH_FILE, "a") as f:
+            if new:
+                f.write(DEPTH_HEADER)
+            for r in rows:
+                f.write(",".join(str(x) for x in r) + "\n")
+    except OSError:
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # backsim: historical portfolio over all available settled markets
 # --------------------------------------------------------------------------- #
@@ -313,11 +350,23 @@ def poll(args) -> int:
             "trigger": trigger, "opened_at": now_iso(), "status": "open"}
         return 1
 
-    # 2) scan live open markets and open new positions per the entry rule
+    # 2) scan live open markets, log depth, open new positions per the entry rule
     seen_fav = set()
+    depth_rows = []
     for s in (args.series.split(",") if args.series else WEATHER):
         for m in kc.paginate_markets("open", series_ticker=s, max_markets=args.max):
             tkr = m.get("ticker")
+
+            # depth log: for any >=99c favorite, record the REAL buyable ask + size
+            b = buyable_at(m, 0.99)
+            if b is not None:
+                bside, bprice, bsize = b
+                cts2 = parse_ts(m.get("close_time"))
+                mtc = round((cts2 - now) / 60.0) if cts2 else -1
+                buyable99 = 1 if (0 < bprice <= 0.99 and bsize > 0) else 0
+                depth_rows.append((now_iso(), tkr, bside, mtc,
+                                   f"{bprice:.2f}", f"{bsize:.0f}", buyable99))
+
             q = fav_quote(m, stab_thr)         # favorite at the (lower) stability floor
             if q is None:
                 state["hold_since"].pop(tkr, None)         # dropped below floor: reset timer
@@ -346,6 +395,7 @@ def poll(args) -> int:
 
     # forget timers for markets no longer favored/open
     state["hold_since"] = {k: v for k, v in state["hold_since"].items() if k in seen_fav}
+    write_depth(depth_rows)
     save_state(state)
     log_line(f"[{now_iso()}] poll({entry}): opened {opened}, settled {settled}, "
              f"open {len(state['open'])}, cash ${state['cash']:,.2f}")
@@ -379,10 +429,53 @@ def report(args) -> int:
     return 0
 
 
+def depth_report(args) -> int:
+    """Summarize data/depth.csv: how often a 99c favorite was actually buyable at
+    <=99c, bucketed by how close it was to settling."""
+    import csv
+    if not os.path.exists(DEPTH_FILE):
+        print("No depth data yet. Let the poll run (it logs each cycle).")
+        return 0
+    buckets = [(0, 5, "<=5m"), (5, 15, "5-15m"), (15, 60, "15-60m"),
+               (60, 360, "1-6h"), (360, 1e9, ">6h")]
+    agg = {b[2]: [0, 0, 0.0] for b in buckets}  # obs, buyable_count, buyable_size_sum
+    with open(DEPTH_FILE) as f:
+        for row in csv.DictReader(f):
+            try:
+                mtc = float(row["mins_to_close"])
+                buyable = int(row["buyable_at_99"])
+                size = float(row["buy_size"])
+            except (ValueError, KeyError):
+                continue
+            if mtc < 0:
+                continue
+            for lo, hi, name in buckets:
+                if lo <= mtc < hi:
+                    a = agg[name]
+                    a[0] += 1
+                    a[1] += buyable
+                    a[2] += size if buyable else 0
+                    break
+    print("\n=== DEPTH: was the 99c favorite actually BUYABLE at <=99c? ===")
+    print(f"{'time-to-close':<14}{'obs':>7}{'buyable@<=99c':>15}{'avg size when buyable':>24}")
+    print("-" * 60)
+    for _, _, name in buckets:
+        obs, byc, ssum = agg[name]
+        if obs == 0:
+            continue
+        pct = byc / obs * 100
+        avg = (ssum / byc) if byc else 0
+        print(f"{name:<14}{obs:>7}{pct:>14.1f}%{avg:>24.0f}")
+    print("\nbuyable@<=99c = % of observations where a real offer existed to BUY the\n"
+          "favorite at 99c or less (i.e. with any edge). If this is ~0 near close,\n"
+          "the strategy is not fillable and needs no real money to disprove.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["backsim", "poll", "report", "reset"])
+    ap.add_argument("mode", choices=["backsim", "poll", "report", "depth", "reset"])
     ap.add_argument("--stake", type=float, default=100.0, help="Dollars per contract. Default 100.")
     ap.add_argument("--threshold", type=float, default=0.99, help="Favorite price. Default 0.99.")
     ap.add_argument("--entry", choices=["close", "hold"], default="close",
@@ -413,6 +506,8 @@ def main() -> int:
             os.remove(STATE_FILE)
         print("Paper state reset.")
         return 0
+    if args.mode == "depth":
+        return depth_report(args)
     if args.mode == "backsim":
         return backsim(args)
     if args.mode == "poll":
