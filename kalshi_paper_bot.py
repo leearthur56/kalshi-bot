@@ -168,11 +168,12 @@ def backsim(args) -> int:
     thr, hold, stake, coef = args.threshold, args.min_hold_hours, args.stake, args.fee_coef
     entry, win_min = args.entry, args.close_window_min
     stab_thr = args.stability_threshold if args.stability_threshold > 0 else thr
+    series_list = args.series.split(",") if args.series else WEATHER
     trades = []
     realized = 0.0
     wins = losses = 0
 
-    for s in WEATHER:
+    for s in series_list:
       try:
         for m in kc.paginate_markets("settled", series_ticker=s, max_markets=args.max):
             result = m.get("result")
@@ -314,7 +315,7 @@ def poll(args) -> int:
 
     # 2) scan live open markets and open new positions per the entry rule
     seen_fav = set()
-    for s in WEATHER:
+    for s in (args.series.split(",") if args.series else WEATHER):
         for m in kc.paginate_markets("open", series_ticker=s, max_markets=args.max):
             tkr = m.get("ticker")
             q = fav_quote(m, stab_thr)         # favorite at the (lower) stability floor
@@ -401,6 +402,9 @@ def main() -> int:
     ap.add_argument("--start-cash", type=float, default=100000.0,
                     help="Starting paper bankroll. Default 100000.")
     ap.add_argument("--fee-coef", type=float, default=kc.DEFAULT_FEE_COEF)
+    ap.add_argument("--series", type=str, default=None,
+                    help="Comma-separated series tickers to trade instead of the default "
+                         "20 high-temp cities (e.g. low-temp KXLOWTNYC,KXLOWTCHI,...).")
     ap.add_argument("--max", type=int, default=None, help="Cap markets per series.")
     args = ap.parse_args()
 
