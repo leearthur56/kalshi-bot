@@ -58,6 +58,7 @@ anything. The tracker is a **monitoring/research tool**, not a guarantee.
 |--------|--------------|
 | `kalshi_tracker.py` | Live scan of open markets for extreme prices, with EV math. |
 | `kalshi_backtest.py` | Backtests "buy the favorite" on **settled** markets — actual win rate vs implied, net of fees, bucketed by entry price. |
+| `kalshi_sweep.py` | Runs the backtest across **all series at once** and ranks them by net edge. |
 | `kalshi_logger.py` | Logs current prices now and resolutions later, building an **unbiased** forward dataset (`snapshot` / `settle` / `report`). |
 
 ```bash
@@ -96,6 +97,48 @@ thin margin that a handful of upsets would erase. It also assumes fills at mid
 (real fills are worse) and ignores capital lockup. Run it across many series and
 a much bigger `--max`, or accumulate live data with the logger, before believing
 the edge is real.
+
+## Multi-series sweep findings (the honest bottom line)
+
+Swept ~60,000 settled markets and deep-dived the candidates. Two clear groups:
+
+**1. Auto-generated parlays (`KXMVE...`) — the bulk of skewed favorites, but untradeable for this.**
+Their settled records are degenerate: open and close times collapse to a ~5-second
+settlement instant, many with 0 volume and no candlestick history. You cannot
+reconstruct an honest entry price, so the tempting biased "+1% edge" is unverifiable.
+Skip them.
+
+**2. Daily weather (`KXHIGH*`) — genuinely tradeable, and the favorite edge is real but tiny.**
+Unbiased (candlestick) backtest, 99¢ bucket, net of fees on 100-lots:
+
+| Series | N @99¢ | Net EV/contract | Losses in sample |
+|--------|--------|-----------------|------------------|
+| KXHIGHNY | 348 | +0.87¢ | 0 |
+| KXHIGHCHI | 386 | +0.86¢ | 0 |
+| KXHIGHMIA | 392 | +0.85¢ | 0 |
+| KXHIGHLAX | 393 | +0.85¢ | 0 |
+| KXHIGHDEN | 382 | +0.85¢ | 0 |
+
+Consistent across cities and across lead times (6h/12h/18h/24h before close): the
+99¢ favorite won **100%** of the time → a small, *real* structural edge (the price
+can't exceed 99¢ while open, but the true probability of these extreme weather
+thresholds is ~99.9%). **It is positive after fees: ~+0.9¢ per contract.**
+
+### Why this is still NOT a money printer
+- **Tail risk dominates.** The edge is +0.9¢; one loss is **−99¢** — a single upset
+  erases ~110 winning trades. The sample has zero losses *yet*; the math guarantees
+  one eventually. You're paid 0.9¢ to carry 99¢ of tail risk (tiny Kelly fraction).
+- **No capacity.** The edge exists *because* nobody bothers with the last cent —
+  which means there's almost no size to buy at 99¢. Scale up and you eat the book /
+  move the price and the edge vanishes. The backtest assumes unlimited fill at mid;
+  reality caps you hard.
+- **Capital lockup.** ~0.9% per resolution on fully-locked collateral, only on the
+  thin size you can actually get.
+
+So: a genuine micro-edge exists in the liquid daily series, but its risk/reward is
+exactly why the price sits at 99 — small scalable profit, rare catastrophic loss.
+Real, measurable, and not something to bet the farm on. Use `kalshi_logger.py` to
+keep accruing live, unbiased resolutions and watch for the first loss.
 
 ## Output columns
 
