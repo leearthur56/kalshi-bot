@@ -91,6 +91,17 @@ def parse_ts(s: str | None):
         return None
 
 
+def log_line(msg: str) -> None:
+    """Print and append to data/poll.log (so a no-console pythonw run still logs)."""
+    print(msg)
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(os.path.join(STATE_DIR, "poll.log"), "a") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # backsim: historical portfolio over all available settled markets
 # --------------------------------------------------------------------------- #
@@ -256,8 +267,8 @@ def poll(args) -> int:
     if entry == "hold":  # forget timers for markets no longer favored/open
         state["hold_since"] = {k: v for k, v in state["hold_since"].items() if k in seen_fav}
     save_state(state)
-    print(f"[{now_iso()}] poll({entry}): opened {opened}, settled {settled}, "
-          f"open {len(state['open'])}, cash ${state['cash']:,.2f}")
+    log_line(f"[{now_iso()}] poll({entry}): opened {opened}, settled {settled}, "
+             f"open {len(state['open'])}, cash ${state['cash']:,.2f}")
     return 0
 
 
@@ -315,7 +326,13 @@ def main() -> int:
     if args.mode == "backsim":
         return backsim(args)
     if args.mode == "poll":
-        return poll(args)
+        try:
+            return poll(args)
+        except Exception as e:  # noqa: BLE001 - log and exit cleanly under pythonw
+            import traceback
+            log_line(f"[{now_iso()}] poll ERROR: {e}")
+            log_line(traceback.format_exc())
+            return 1
     return report(args)
 
 
