@@ -124,6 +124,31 @@ Consistent across cities and across lead times (6h/12h/18h/24h before close): th
 can't exceed 99¢ while open, but the true probability of these extreme weather
 thresholds is ~99.9%). **It is positive after fees: ~+0.9¢ per contract.**
 
+### The loss audit overturns even that — the bot would have LOST money
+
+The +0.9¢ figure prices each market at ONE calm moment (6h before close). But the
+real bot buys *whenever* it sees 99¢. `kalshi_loss_audit.py` asks the honest
+question: over each market's **full candlestick life**, did the side that
+ultimately lost ever trade at ≥99¢? If yes, the bot would have bought it and eaten
+~−99¢. Result across all 7 weather cities (~2 months, all the API serves):
+
+| | |
+|---|---|
+| Markets audited | 2,774 |
+| Favorite touched ≥99¢ in | 2,774 (all of them) |
+| **Times the 99¢ favorite LOST** | **60** |
+| Empirical upset rate at 99¢ | **2.16% — 1 loss per ~46 bets** |
+
+Buying 1 contract in each: winners make ~+1¢ × 2,714 = +$27, losers cost ~−99¢ ×
+60 = **−$59**. **Net ≈ −$32 over two months — about −1.2¢ per contract.** The "edge"
+was an illusion of measuring price at a single benign instant; a bot trading every
+99¢ spike is **net negative**. Worse, losses *cluster* on volatile weather days
+(several threshold markets spike to 99¢ on the wrong side at once), so the bad days
+are correlated — exactly the wrong risk shape.
+
+**So: would the bot ever have lost? Yes — 60 times in two months, and the losses
+outweigh all the penny wins combined.**
+
 ### Why this is still NOT a money printer
 - **Tail risk dominates.** The edge is +0.9¢; one loss is **−99¢** — a single upset
   erases ~110 winning trades. The sample has zero losses *yet*; the math guarantees
