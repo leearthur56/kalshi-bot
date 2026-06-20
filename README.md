@@ -47,6 +47,47 @@ many tiny wins, then one loss that erases all of them. The tracker is a
 **monitoring/learning tool**, not a guaranteed-money strategy — there is no such
 thing, and any tool claiming otherwise is wrong about how prices work.
 
+## The tools
+
+| Script | What it does |
+|--------|--------------|
+| `kalshi_tracker.py` | Live scan of open markets for extreme prices, with EV math. |
+| `kalshi_backtest.py` | Backtests "buy the favorite" on **settled** markets — actual win rate vs implied, net of fees, bucketed by entry price. |
+| `kalshi_logger.py` | Logs current prices now and resolutions later, building an **unbiased** forward dataset (`snapshot` / `settle` / `report`). |
+
+```bash
+# Does the favorite win more than its price implies? (last_price = biased/optimistic)
+python kalshi_backtest.py --series KXHIGHNY --min-price 0.90 --min-volume 500
+
+# Honest version: entry price 6h before close, no peeking at the outcome (slower)
+python kalshi_backtest.py --series KXHIGHNY --max 250 --lead-hours 6
+
+# Build your own unbiased dataset over time (run on a schedule)
+python kalshi_logger.py snapshot --threshold 0.90 --min-volume 500
+python kalshi_logger.py settle      # run after markets close
+python kalshi_logger.py report
+```
+
+## What the backtest actually found (NYC-weather series, sample run)
+
+Using an **unbiased** entry price 6h before close:
+
+| Entry price | N | Implied | Actual win | Edge | Net EV/contract |
+|-------------|---|---------|-----------|------|-----------------|
+| 99–100¢ | 217 | 99.06% | 100.00% | **+0.94%** | **−0.06¢** |
+| 98–99¢ | 10 | 98.35% | 100% | +1.65% | +0.65¢ |
+| 90–95¢ | 8 | 92.06% | 75% | −17% | −18¢ |
+
+Your hypothesis is **partly right**: favorites at 99¢ did win slightly *more*
+than priced (+0.94% edge — the tick-floor/longshot effect is real and
+measurable). **But** the 1¢ fee turns that into a small *negative* EV, and a
+couple of upsets in the lower buckets blow a hole that dwarfs all the penny
+wins. Total across the sample: **−$1.12**. Picking up pennies, meet steamroller.
+
+Caveats: small sample, one series, fills assumed at mid (real fills are worse),
+no capital-efficiency penalty for locking 99¢ to earn <1¢. Run it on more series
+and a bigger `--max` before drawing conclusions — that's what the tools are for.
+
 ## Output columns
 
 ```
