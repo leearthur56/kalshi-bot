@@ -226,6 +226,25 @@ For continuous live operation, schedule `poll` with Windows Task Scheduler
 historical numbers. Same caveats as everywhere: ~1¢ upside, thin near-close
 liquidity, and tail risk a short history can't price.
 
+### close vs hold, head-to-head (backsim, 20 cities, $100/contract)
+
+| Entry rule | Trades | Losses | Realized P&L | Return on staked |
+|------------|--------|--------|--------------|------------------|
+| Held >1h | 986 | 2 | +$724.84 | +0.74% |
+| **Near-close (5 min)** | **1,039** | **0** | **+$976.66** | **+0.94%** |
+
+Near-close won on both counts: it caught *more* settled favorites (many only
+consolidate onto 99¢ late, without a clean continuous hour earlier), and it took
+*zero* losses — the 2 losses the hold rule ate were favorites that held 99¢ for
+an hour and *then reversed*; by the final 5 minutes those had already fallen off
+99¢, so near-close never bought them. Pricing at the last moment avoids buying a
+favorite that has already started to break.
+
+**Caveat the sim can't capture:** backsim assumes you can *buy* 99¢ whenever the
+price was 99¢. Near close, holders often wait to collect the full $1, so the
+offer may sit at 100¢ — meaning fewer real fills than the 1,039 shown. The live
+`poll` measures the true fill rate over time.
+
 ## Output columns
 
 ```
