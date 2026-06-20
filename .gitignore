@@ -6,3 +6,6 @@ venv/
 .env
 *.json.out
 data/
+
+# local Claude Code config
+.claude/

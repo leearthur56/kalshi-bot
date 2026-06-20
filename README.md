@@ -149,7 +149,45 @@ are correlated — exactly the wrong risk shape.
 **So: would the bot ever have lost? Yes — 60 times in two months, and the losses
 outweigh all the penny wins combined.**
 
-### Why this is still NOT a money printer
+### The fix: only buy if it HELD 99¢ for >2 hours
+
+If the killers are brief spikes, require the favorite to *sit* at ≥99¢ before
+buying. `kalshi_hold_audit.py` measures the longest consecutive span (hourly,
+volume-backed candles, conservative: a single dip breaks the run) the favorite
+held ≥99¢, and only "enters" markets where that span exceeds `--min-hold-hours`.
+
+At **>2h hold**, across all 7 weather cities (~2 months):
+
+| | |
+|---|---|
+| Markets audited | 2,776 |
+| Qualifying entries (held ≥99¢ >2h) | 1,706 |
+| **Losses** | **0** |
+| Crude P&L (1 contract each) | **+$17** |
+
+**Every one of the 60 losses was a transient spike** that never held 99¢ for two
+hours. Filtering them out flips the strategy from −$32 to +$17 in-sample. The
+favorite-longshot edge appears to be *real* — but only on sustained quotes, not
+every 99¢ blip.
+
+**The honest caveats that remain:**
+- **Two months is not proof.** 0 losses in 1,706 bounds the true upset rate at
+  roughly ≤0.2% (rule of 3), no lower. Tail events are rare; a 2-month window may
+  simply not contain the freak weather day that breaks a sustained 99¢.
+- **Correlated blowups.** When a sustained favorite finally breaks, it may take
+  several threshold markets the same day with it. One such day could erase months
+  of pennies. We haven't seen one yet — that's not the same as it can't happen.
+- **Thin capacity.** The edge exists because few trade the last cent, so there's
+  little size to buy at 99¢. It doesn't scale.
+- **Still ~1¢/contract.** A real but small edge, now with rare-but-catastrophic
+  tail risk instead of frequent losses.
+
+So: a credible micro-edge on *sustained* 99¢ favorites, validated in-sample, with
+tail risk that only a longer history (or live logging) can price. Run
+`kalshi_hold_audit.py --min-hold-hours 2` to reproduce; widen the window with
+`kalshi_logger.py` going forward.
+
+### Why even the sustained version is not a money printer
 - **Tail risk dominates.** The edge is +0.9¢; one loss is **−99¢** — a single upset
   erases ~110 winning trades. The sample has zero losses *yet*; the math guarantees
   one eventually. You're paid 0.9¢ to carry 99¢ of tail risk (tiny Kelly fraction).
