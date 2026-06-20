@@ -91,6 +91,62 @@ def parse_ts(s: str | None):
         return None
 
 
+def stable_through_close(market: dict, thr: float, win_min: float, hold_min: float):
+    """
+    For the near-close + stability rule. Using MINUTE candles, check that the
+    favorite held >= thr continuously over the window ending `win_min` before
+    close and stretching back `hold_min` minutes. Returns (side, fav_price) at
+    the buy point if it qualifies, else None.
+    """
+    cts = parse_ts(market.get("close_time"))
+    if cts is None:
+        return None
+    buy_ts = cts - int(win_min * 60)
+    start = buy_ts - int(hold_min * 60)
+    try:
+        data = kc.get(f"/series/{kc.series_of(market['ticker'])}"
+                      f"/markets/{market['ticker']}/candlesticks",
+                      {"start_ts": start - 120, "end_ts": cts + 60, "period_interval": 1})
+    except RuntimeError:
+        return None
+
+    rows = []  # (ts, yes_mid) from the QUOTE (exists every minute, even with no trades)
+    for c in data.get("candlesticks", []):
+        ts = c.get("end_period_ts")
+        if ts is None or not (start <= ts <= buy_ts + 60):
+            continue
+        try:
+            yb = float(c.get("yes_bid", {}).get("close_dollars"))
+            ya = float(c.get("yes_ask", {}).get("close_dollars"))
+        except (TypeError, ValueError):
+            continue
+        if yb <= 0 and ya <= 0:
+            continue
+        yes_mid = max(yb, ya) if (yb <= 0 or ya <= 0) else (yb + ya) / 2.0
+        rows.append((int(ts), yes_mid))
+    if len(rows) < 2:
+        return None
+    rows.sort()
+
+    # need coverage spanning ~the whole hold window (allow small gaps)
+    if rows[-1][0] - rows[0][0] < hold_min * 60 * 0.8:
+        return None
+    # favorite side from the last quote at/just before the buy point
+    last_mid = rows[-1][1]
+    if last_mid >= thr:
+        side = "YES"
+    elif (1 - last_mid) >= thr:
+        side = "NO"
+    else:
+        return None
+    # require the favorite stayed >= thr for every minute in the window
+    for _, mid in rows:
+        fav = mid if side == "YES" else (1 - mid)
+        if fav < thr:
+            return None
+    return side, thr
+
+
 def log_line(msg: str) -> None:
     """Print and append to data/poll.log (so a no-console pythonw run still logs)."""
     print(msg)
@@ -130,6 +186,14 @@ def backsim(args) -> int:
                                          ("NO", no_hours, result == "no")):
                     if hours > hold:
                         candidates.append((side, won, f"held {hours:.1f}h"))
+            elif args.min_hold_min > 0:  # near-close AND stable for the prior window
+                q = stable_through_close(m, thr, win_min, args.min_hold_min)
+                if q is None:
+                    continue
+                side, _ = q
+                won = (result == "yes") if side == "YES" else (result == "no")
+                candidates.append((side, won,
+                                   f"{win_min:g}m pre, stable {args.min_hold_min:g}m"))
             else:  # near-close: favorite price in the final window before close
                 cts = parse_ts(m.get("close_time"))
                 if cts is None:
@@ -249,27 +313,30 @@ def poll(args) -> int:
             tkr = m.get("ticker")
             q = fav_quote(m, thr)
             if q is None:
-                state["hold_since"].pop(tkr, None)         # dropped below thr: reset
+                state["hold_since"].pop(tkr, None)         # dropped below thr: reset timer
                 continue
             side, mid, ask = q
+            seen_fav.add(tkr)
+            since = state["hold_since"].setdefault(tkr, now)  # first time at >= thr
+            held_min = (now - since) / 60.0
 
             if entry == "close":
                 cts = parse_ts(m.get("close_time"))
                 if cts is None:
                     continue
                 mins_to_close = (cts - now) / 60.0
-                if 0 < mins_to_close <= win_min:
-                    opened += open_position(tkr, s, side, ask,
-                                            f"{mins_to_close:.1f}m pre-close")
+                # buy in the final window, optionally only if it has been stable
+                if 0 < mins_to_close <= win_min and held_min >= args.min_hold_min:
+                    trig = (f"{mins_to_close:.1f}m pre"
+                            + (f", held {held_min:.0f}m" if args.min_hold_min > 0 else ""))
+                    opened += open_position(tkr, s, side, ask, trig)
             else:  # hold >= min_hold_hours
-                seen_fav.add(tkr)
-                since = state["hold_since"].setdefault(tkr, now)
                 if now - since > hold * HOUR:
                     opened += open_position(tkr, s, side, ask,
-                                            f"held {(now-since)/HOUR:.1f}h")
+                                            f"held {held_min/60:.1f}h")
 
-    if entry == "hold":  # forget timers for markets no longer favored/open
-        state["hold_since"] = {k: v for k, v in state["hold_since"].items() if k in seen_fav}
+    # forget timers for markets no longer favored/open
+    state["hold_since"] = {k: v for k, v in state["hold_since"].items() if k in seen_fav}
     save_state(state)
     log_line(f"[{now_iso()}] poll({entry}): opened {opened}, settled {settled}, "
              f"open {len(state['open'])}, cash ${state['cash']:,.2f}")
@@ -314,6 +381,9 @@ def main() -> int:
                          "hold = buy once favorite has held >= threshold for >min-hold-hours.")
     ap.add_argument("--close-window-min", type=float, default=5.0,
                     help="[close mode] buy when within this many minutes of close. Default 5.")
+    ap.add_argument("--min-hold-min", type=float, default=0.0,
+                    help="[close mode] also require the favorite to have stayed >= threshold "
+                         "for at least this many minutes before buying. 0 = pure near-close.")
     ap.add_argument("--min-hold-hours", type=float, default=1.0,
                     help="[hold mode] require favorite to hold >= threshold longer than this. Default 1.")
     ap.add_argument("--start-cash", type=float, default=100000.0,
