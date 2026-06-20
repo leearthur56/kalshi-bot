@@ -113,6 +113,7 @@ def backsim(args) -> int:
     wins = losses = 0
 
     for s in WEATHER:
+      try:
         for m in kc.paginate_markets("settled", series_ticker=s, max_markets=args.max):
             result = m.get("result")
             if result not in ("yes", "no"):
@@ -151,6 +152,9 @@ def backsim(args) -> int:
                 losses += 0 if won else 1
                 trades.append({"ticker": m["ticker"], "side": side, "won": won,
                                "trigger": trig, "pnl": pnl})
+      except RuntimeError as e:
+        print(f"  (skipped {s}: {e})", file=sys.stderr)
+        continue
 
     n = len(trades)
     invested = n * stake

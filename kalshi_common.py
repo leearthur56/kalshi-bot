@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -20,21 +21,33 @@ USER_AGENT = "kalshi-skew-tracker/1.0 (+https://docs.kalshi.com)"
 # Most markets use 0.07; a few (e.g. S&P/Nasdaq ranges) use 0.035.
 DEFAULT_FEE_COEF = 0.07
 
+# Client-side throttle: keep a minimum gap between requests so bursts don't trip
+# Kalshi's rate limit (public cap is ~30/s; we stay well under to be safe).
+MIN_INTERVAL = 0.12
+_last_req = 0.0
 
-def get(path: str, params: dict | None = None, retries: int = 3) -> dict:
-    """GET a JSON endpoint with light retry on transient errors."""
+
+def get(path: str, params: dict | None = None, retries: int = 6) -> dict:
+    """GET a JSON endpoint, throttled, with backoff on transient errors / 429s."""
+    global _last_req
     url = f"{API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     last_err: Exception | None = None
     for attempt in range(retries):
+        wait = MIN_INTERVAL - (time.time() - _last_req)
+        if wait > 0:
+            time.sleep(wait)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=30) as resp:
+                _last_req = time.time()
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:  # noqa: BLE001 - network layer, want to retry broadly
+            _last_req = time.time()
             last_err = e
-            time.sleep(0.5 * (attempt + 1))
+            is_429 = isinstance(e, urllib.error.HTTPError) and e.code == 429
+            time.sleep(min(8.0, (1.0 if is_429 else 0.5) * (2 ** attempt)))
     raise RuntimeError(f"GET {url} failed after {retries} tries: {last_err}")
 
 
