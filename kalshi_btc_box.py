@@ -26,7 +26,7 @@ import sys
 import kalshi_common as kc
 
 
-def candles_1m(market: dict):
+def candles_1m(market: dict, interval: int = 1):
     t = market["ticker"]
     try:
         ot = int(dt.datetime.fromisoformat(market["open_time"].replace("Z", "+00:00")).timestamp())
@@ -35,7 +35,7 @@ def candles_1m(market: dict):
         return None
     try:
         data = kc.get(f"/series/{kc.series_of(t)}/markets/{t}/candlesticks",
-                      {"start_ts": ot - 60, "end_ts": ct + 60, "period_interval": 1})
+                      {"start_ts": ot - 60, "end_ts": ct + 60, "period_interval": interval})
     except RuntimeError:
         return None
     out = []
@@ -57,11 +57,11 @@ def run(args) -> int:
     pnl = 0.0
     stuck_win = stuck_lose = 0
 
-    for m in kc.paginate_markets("settled", series_ticker="KXBTC15M", max_markets=args.max):
+    for m in kc.paginate_markets("settled", series_ticker=args.series, max_markets=args.max):
         result = m.get("result")
         if result not in ("yes", "no"):
             continue
-        rows = candles_1m(m)
+        rows = candles_1m(m, args.interval)
         if not rows or len(rows) < 3:
             continue
 
@@ -113,9 +113,14 @@ def run(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--series", type=str, default="KXBTC15M",
+                    help="Series ticker to backtest (default KXBTC15M). Try live single-game "
+                         "sports series for whipsaw.")
     ap.add_argument("--entry", type=float, default=0.40,
                     help="Buy a side when offered at <= this price. Default 0.40.")
     ap.add_argument("--max", type=int, default=400, help="Settled markets to scan. Default 400.")
+    ap.add_argument("--interval", type=int, default=1,
+                    help="Candlestick minutes (1 for 15m markets; use 5+ for multi-hour games).")
     ap.add_argument("--fee-coef", type=float, default=kc.DEFAULT_FEE_COEF)
     return run(ap.parse_args())
 
