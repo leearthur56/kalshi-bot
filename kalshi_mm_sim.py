@@ -33,7 +33,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
+import json
 import math
+import os
 import sys
 
 import kalshi_common as kc
@@ -97,12 +100,37 @@ def prefetch(m: dict, args):
     except (KeyError, ValueError):
         return None
     start = open_ts if args.window_hours <= 0 else max(open_ts, close_ts - int(args.window_hours * 3600))
+
+    cache = None
+    if args.cache_dir:
+        os.makedirs(args.cache_dir, exist_ok=True)
+        cache = os.path.join(args.cache_dir, f"{m['ticker']}_{args.window_hours:g}h.json.gz")
+        if os.path.exists(cache):
+            with gzip.open(cache, "rt") as f:
+                d = json.load(f)
+            if d is None:
+                return None
+            if d == "truncated":
+                return "truncated"
+            return ({int(k): tuple(v) for k, v in d["quotes"].items()},
+                    [tuple(t) for t in d["trades"]], d["close_ts"])
+
+    def save(obj):
+        if cache:
+            with gzip.open(cache, "wt") as f:
+                json.dump(obj, f)
+
     quotes = fetch_quotes(m["ticker"], start, close_ts)
     if len(quotes) < 5:
+        save(None)
         return None
     trades, truncated = fetch_trades(m["ticker"], start, close_ts, args.max_trade_pages)
-    if trades is None or truncated:
+    if trades is None:
+        return "truncated"          # transient fetch failure: don't cache
+    if truncated:
+        save("truncated")
         return "truncated"
+    save({"quotes": quotes, "trades": trades, "close_ts": close_ts})
     return quotes, trades, close_ts
 
 
@@ -134,7 +162,11 @@ def simulate(m: dict, data, cfg: dict, args):
         while ti < len(trades) and trades[ti][0] <= nxt:
             _, p, cnt, side = trades[ti]
             ti += 1
-            if side == "no" and bid_left > 0 and p <= bid:        # seller hit bids
+            # strict: only count fills when the trade printed THROUGH our price,
+            # where we'd certainly have been first in the queue
+            hit_bid = p < bid if cfg["strict"] else p <= bid
+            hit_ask = p > ask if cfg["strict"] else p >= ask
+            if side == "no" and bid_left > 0 and hit_bid:         # seller hit bids
                 q = min(bid_left, cnt, args.max_inv - inv)
                 if q <= 0:
                     continue
@@ -143,7 +175,7 @@ def simulate(m: dict, data, cfg: dict, args):
                 cash -= q * bid
                 spread += q * (mid - bid)
                 fees += MAKER_COEF * q * bid * (1 - bid)
-            elif side == "yes" and ask_left > 0 and p >= ask:     # buyer lifted asks
+            elif side == "yes" and ask_left > 0 and hit_ask:      # buyer lifted asks
                 q = min(ask_left, cnt, args.max_inv + inv)
                 if q <= 0:
                     continue
@@ -168,42 +200,85 @@ def simulate(m: dict, data, cfg: dict, args):
 def cfg_label(cfg: dict) -> str:
     q = ("touch" if cfg["quote"] == "touch"
          else f"mid+/-{cfg['half_spread']*100:.0f}c")
+    q += " strict" if cfg["strict"] else ""
     return q + (f", stop {cfg['stop_before_min']:g}m early" if cfg["stop_before_min"] else "")
 
 
-def run(args) -> int:
+def build_cfgs(args) -> list[dict]:
+    def c(quote, hs=0.0, stop=0.0, strict=False):
+        return {"quote": quote, "half_spread": hs, "stop_before_min": stop, "strict": strict}
+    if args.grid:
+        spreads = [float(x) for x in args.spreads.split(",")]
+        cfgs = [c("touch"), c("touch", strict=True)]
+        for hs in spreads:
+            cfgs += [c("offset", hs), c("offset", hs, strict=True)]
+        return cfgs
     if args.compare:
         stop = args.compare_stop_min
-        cfgs = [{"quote": "touch", "half_spread": 0, "stop_before_min": 0},
-                {"quote": "touch", "half_spread": 0, "stop_before_min": stop},
-                {"quote": "offset", "half_spread": args.half_spread, "stop_before_min": 0},
-                {"quote": "offset", "half_spread": args.half_spread, "stop_before_min": stop}]
-    else:
-        cfgs = [{"quote": args.quote, "half_spread": args.half_spread,
-                 "stop_before_min": args.stop_before_min}]
+        return [c("touch"), c("touch", stop=stop),
+                c("offset", args.half_spread), c("offset", args.half_spread, stop=stop)]
+    return [c(args.quote, args.half_spread, args.stop_before_min, args.strict)]
 
+
+def run(args) -> int:
+    cfgs = build_cfgs(args)
     results = {i: [] for i in range(len(cfgs))}
-    skipped_trunc = scanned = 0
+    skipped_trunc = simulated = 0
+    seen_events: set[str] = set()
+    event_idx = 0
+
     for m in kc.paginate_markets("settled", series_ticker=args.series, max_markets=args.max):
         if m.get("result") not in ("yes", "no"):
             continue
+        # each game has one market per team and they're exact mirror images:
+        # keep only the first market of each event so no game counts twice
+        ev = m.get("event_ticker") or m["ticker"]
+        if ev in seen_events:
+            continue
+        seen_events.add(ev)
+        event_idx += 1
+        if (event_idx - 1) % args.stride:
+            continue                    # sample every Nth game to spread across the season
+        if args.games and simulated >= args.games:
+            break
         data = prefetch(m, args)
         if data == "truncated":
             skipped_trunc += 1
             continue
         if data is None:
             continue
-        scanned += 1
-        print(f"  [{scanned}] {m['ticker']}", file=sys.stderr)
+        simulated += 1
+        print(f"  [{simulated}] {m['ticker']}", file=sys.stderr)
         for i, cfg in enumerate(cfgs):
             r = simulate(m, data, cfg, args)
             if r["fills"] > 0:
                 results[i].append(r)
 
-    print(f"\n######## {args.series}: {scanned} markets simulated | size {args.size:g}/side, "
+    print(f"\n######## {args.series}: {simulated} games simulated "
+          f"(1 market per game, every {args.stride} game(s)) | size {args.size:g}/side, "
           f"max inventory {args.max_inv:g} ########")
     if skipped_trunc:
-        print(f"(skipped {skipped_trunc} markets whose trade history exceeded the page cap)")
+        print(f"(skipped {skipped_trunc} games whose trade history exceeded the page cap)")
+
+    if args.grid:
+        print(f"\n{'variant':<20}{'games':>6}{'contracts':>11}{'spread':>10}{'fees':>9}"
+              f"{'inventory':>11}{'TOTAL':>10}{'c/contract':>11}{'win%':>6}")
+        print("-" * 94)
+        for i, cfg in enumerate(cfgs):
+            rows = results[i]
+            if not rows:
+                print(f"{cfg_label(cfg):<20}  no fills")
+                continue
+            t = {k: sum(r[k] for r in rows) for k in ("volume", "spread", "fees",
+                                                     "inv_pnl", "total")}
+            win = sum(1 for r in rows if r["total"] > 0) / len(rows) * 100
+            print(f"{cfg_label(cfg):<20}{len(rows):>6}{t['volume']:>11,.0f}"
+                  f"{t['spread']:>+10.2f}{-t['fees']:>+9.2f}{t['inv_pnl']:>+11.2f}"
+                  f"{t['total']:>+10.2f}{t['total']/max(t['volume'],1)*100:>+11.2f}{win:>5.0f}%")
+        print("\nAll $ figures are totals across games. 'strict' only counts fills where a "
+              "trade printed\nthrough the quote (no queue optimism) -- trust those rows most.")
+        return 0
+
     for i, cfg in enumerate(cfgs):
         print(f"\n--- {cfg_label(cfg)} ---")
         summarize(results[i])
@@ -260,6 +335,20 @@ def main() -> int:
                          "offset / offset+stop early.")
     ap.add_argument("--compare-stop-min", type=float, default=3,
                     help="[compare] minutes before close to stop quoting. Default 3.")
+    ap.add_argument("--strict", action="store_true",
+                    help="Only fill when a trade prints strictly through the quote (no queue "
+                         "optimism).")
+    ap.add_argument("--grid", action="store_true",
+                    help="Run touch plus each --spreads offset, each loose and strict, on the "
+                         "same data; print a table.")
+    ap.add_argument("--spreads", default="0.01,0.02,0.03",
+                    help="[grid] comma-separated half-spreads. Default 0.01,0.02,0.03.")
+    ap.add_argument("--games", type=int, default=0,
+                    help="Stop after simulating this many games (0 = no limit beyond --max).")
+    ap.add_argument("--stride", type=int, default=1,
+                    help="Simulate every Nth game to spread the sample over time. Default 1.")
+    ap.add_argument("--cache-dir", default=os.path.join("data", "mm_cache"),
+                    help="Cache downloaded quotes/trades here (gzipped). '' disables.")
     return run(ap.parse_args())
 
 
