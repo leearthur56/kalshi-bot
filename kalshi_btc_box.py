@@ -26,16 +26,19 @@ import sys
 import kalshi_common as kc
 
 
-def candles_1m(market: dict, interval: int = 1):
+def candles_1m(market: dict, interval: int = 1, lookback_hours: float = 0):
     t = market["ticker"]
     try:
         ot = int(dt.datetime.fromisoformat(market["open_time"].replace("Z", "+00:00")).timestamp())
         ct = int(dt.datetime.fromisoformat(market["close_time"].replace("Z", "+00:00")).timestamp())
     except (ValueError, KeyError):
         return None
+    # For long-lived markets (sports open days early) bound the 1-min fetch to the
+    # final lookback_hours before close -- that's where the game actually plays.
+    start = ot if lookback_hours <= 0 else max(ot, ct - int(lookback_hours * 3600))
     try:
         data = kc.get(f"/series/{kc.series_of(t)}/markets/{t}/candlesticks",
-                      {"start_ts": ot - 60, "end_ts": ct + 60, "period_interval": interval})
+                      {"start_ts": start - 60, "end_ts": ct + 60, "period_interval": interval})
     except RuntimeError:
         return None
     out = []
@@ -56,14 +59,23 @@ def run(args) -> int:
     entries = completes = 0
     pnl = 0.0
     stuck_win = stuck_lose = 0
+    scanned = even = 0
 
     for m in kc.paginate_markets("settled", series_ticker=args.series, max_markets=args.max):
         result = m.get("result")
         if result not in ("yes", "no"):
             continue
-        rows = candles_1m(m, args.interval)
+        rows = candles_1m(m, args.interval, args.candle_hours)
         if not rows or len(rows) < 3:
             continue
+        scanned += 1
+
+        # pregame evenness filter: use the EARLIEST price as the pregame line
+        yb0, ya0 = rows[0]
+        pregame = (yb0 + ya0) / 2
+        if not (args.pregame_lo <= pregame <= args.pregame_hi):
+            continue
+        even += 1
 
         side = costA = None
         completed = False
@@ -93,7 +105,10 @@ def run(args) -> int:
             stuck_win += 1 if win else 0
             stuck_lose += 0 if win else 1
 
-    print(f"\n=== KXBTC15M 'leg into a box' @ entry <= {entry*100:.0f}c ===")
+    print(f"\n=== {args.series} 'leg into a box' @ entry <= {entry*100:.0f}c ===")
+    if args.pregame_lo > 0 or args.pregame_hi < 1:
+        print(f"pregame filter: {args.pregame_lo:.2f}-{args.pregame_hi:.2f}  "
+              f"({even} of {scanned} markets were that even)")
     print(f"markets with a trade: {entries}")
     if entries == 0:
         print("no entries"); return 0
@@ -121,6 +136,14 @@ def main() -> int:
     ap.add_argument("--max", type=int, default=400, help="Settled markets to scan. Default 400.")
     ap.add_argument("--interval", type=int, default=1,
                     help="Candlestick minutes (1 for 15m markets; use 5+ for multi-hour games).")
+    ap.add_argument("--candle-hours", type=float, default=0,
+                    help="For long-lived markets, only fetch the final N hours before close "
+                         "(e.g. 6 for sports games). 0 = whole life.")
+    ap.add_argument("--pregame-lo", type=float, default=0.0,
+                    help="Only trade markets whose earliest (pregame) price >= this. "
+                         "Use 0.42 with --pregame-hi 0.58 for ~even matchups.")
+    ap.add_argument("--pregame-hi", type=float, default=1.0,
+                    help="Only trade markets whose earliest (pregame) price <= this.")
     ap.add_argument("--fee-coef", type=float, default=kc.DEFAULT_FEE_COEF)
     return run(ap.parse_args())
 
